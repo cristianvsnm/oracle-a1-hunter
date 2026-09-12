@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 # Oracle Cloud A1 Flex Hunter - GitHub Actions
-# Comando construido 100% con flags explícitos (sin --from-json)
+# Usa archivos JSON para --metadata y --shape-config
 # ============================================================
 
 set -u
@@ -22,7 +22,6 @@ log "============================================"
 log ""
 log "Region:       ${OCI_REGION:-desconocida}"
 log "Shape:        ${OCI_SHAPE:-VM.Standard.A1.Flex}"
-log "OCPU:         ${OCI_OCPUS:-2}  |  RAM: ${OCI_MEMORY_GB:-12} GB  |  Disco: ${OCI_BOOT_VOLUME_GB:-50} GB"
 log "Reintento:    cada ${INTERVAL_SECONDS}s"
 log ""
 
@@ -43,6 +42,14 @@ if [ -z "${OCI_SUBNET_ID:-}" ]; then
   log "ERROR: OCI_SUBNET_ID no está definido."
   exit 1
 fi
+
+# Verificar que existan los archivos JSON
+for f in metadata.json shape-config.json; do
+  if [ ! -f "$f" ]; then
+    log "ERROR: falta $f"
+    exit 1
+  fi
+done
 
 # ------------------------------------------------------------
 # Bucle principal
@@ -93,22 +100,23 @@ for i in d['data']:
   fi
 
   # ----------------------------------------------------------
-  # Intentar crear la instancia (100% flags explícitos)
+  # Intentar crear la instancia
   # ----------------------------------------------------------
   log ""
-  log "Intentando crear ${OCI_SHAPE:-VM.Standard.A1.Flex} ${OCI_OCPUS:-2} OCPU / ${OCI_MEMORY_GB:-12} GB..."
+  log "Intentando crear ${OCI_SHAPE:-VM.Standard.A1.Flex}..."
 
+  # Comando con archivos JSON para parámetros complejos
   OUTPUT=$(oci compute instance launch \
       --compartment-id "$OCI_COMPARTMENT_ID" \
       --availability-domain "$OCI_AD" \
       --shape "$OCI_SHAPE" \
-      --shape-config "{\"ocpus\": ${OCI_OCPUS}, \"memoryInGBs\": ${OCI_MEMORY_GB}}" \
+      --shape-config "file://$(pwd)/shape-config.json" \
       --subnet-id "$OCI_SUBNET_ID" \
-      --image-id "$OCI_IMAGE_ID" \
-      --boot-volume-size-in-gbs "${OCI_BOOT_VOLUME_GB:-50}" \
+      --image-id "$(python -c 'import json; print(json.load(open("source-details.json"))["imageId"])')" \
+      --boot-volume-size-in-gbs "$(python -c 'import json; print(json.load(open("source-details.json"))["bootVolumeSizeInGBs"])')" \
       --assign-public-ip true \
       --display-name "${OCI_DISPLAY_NAME:-minecraft-server}" \
-      --metadata "{\"ssh_authorized_keys\": \"${OCI_SSH_KEY}\"}" \
+      --metadata "file://$(pwd)/metadata.json" \
       --output json 2>&1)
   RC=$?
 
