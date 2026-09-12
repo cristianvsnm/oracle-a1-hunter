@@ -8,51 +8,148 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-      OCI_CLI_REGION: sa-santiago-1
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_REGION: sa-santiago-1
 
     steps:
 
+      - name: Instalar OCI SDK de Python
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install oci
+
       - name: Comprobar autenticacion OCI
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: 'iam region list'
-          silent: false
+        run: |
+          python3 <<'PY'
+          import os
+          import oci
+
+          tenancy = os.environ["OCI_TENANCY_OCID"]
+          user = os.environ["OCI_USER_OCID"]
+          fingerprint = os.environ["OCI_FINGERPRINT"]
+          private_key = os.environ["OCI_PRIVATE_KEY"]
+          region = os.environ["OCI_REGION"]
+
+          signer = oci.signer.Signer(
+              tenancy=tenancy,
+              user=user,
+              fingerprint=fingerprint,
+              private_key_file_location=None,
+              private_key_content=private_key
+          )
+
+          identity = oci.identity.IdentityClient(
+              {"region": region},
+              signer=signer
+          )
+
+          regions = identity.list_regions().data
+
+          print("Autenticacion OCI correcta.")
+          print("Region solicitada:", region)
+
+          encontrada = any(r.name == region for r in regions)
+
+          if not encontrada:
+              raise RuntimeError(
+                  f"La region {region} no fue encontrada en la cuenta."
+              )
+
+          print("Region autenticada correctamente.")
+          PY
 
       - name: Buscar Minecraft-Server
         id: check
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
-          query: 'length(data)'
-          silent: false
+        run: |
+          python3 <<'PY'
+          import os
+          import json
+          import oci
 
-      - name: Mostrar resultado
+          tenancy = os.environ["OCI_TENANCY_OCID"]
+          user = os.environ["OCI_USER_OCID"]
+          fingerprint = os.environ["OCI_FINGERPRINT"]
+          private_key = os.environ["OCI_PRIVATE_KEY"]
+          region = os.environ["OCI_REGION"]
+
+          signer = oci.signer.Signer(
+              tenancy=tenancy,
+              user=user,
+              fingerprint=fingerprint,
+              private_key_file_location=None,
+              private_key_content=private_key
+          )
+
+          compute = oci.core.ComputeClient(
+              {"region": region},
+              signer=signer
+          )
+
+          response = compute.list_instances(
+              compartment_id=tenancy,
+              display_name="Minecraft-Server"
+          )
+
+          instances = response.data
+
+          print("==========================================")
+          print("RESULTADO DE BUSQUEDA")
+          print("==========================================")
+          print("")
+          print("Instancias encontradas:", len(instances))
+          print("")
+
+          if len(instances) == 0:
+              print("NO EXISTE Minecraft-Server.")
+              print("Esto es lo esperado.")
+              print("")
+          else:
+              print("Minecraft-Server EXISTE.")
+              print("No se debe crear otra instancia.")
+              print("")
+
+              for instance in instances:
+                  print("Nombre :", instance.display_name)
+                  print("OCID   :", instance.id)
+                  print("Estado :", instance.lifecycle_state)
+                  print("Shape  :", instance.shape)
+                  print("")
+
+          print("==========================================")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"instance_count={len(instances)}\n")
+
+              if len(instances) == 0:
+                  f.write("instance_exists=false\n")
+              else:
+                  f.write("instance_exists=true\n")
+          PY
+
+      - name: Comprobar deteccion
         run: |
           echo "=========================================="
-          echo "RESULTADO DE BUSQUEDA"
+          echo "COMPROBACION FINAL"
           echo "=========================================="
           echo ""
-          echo "raw_output:"
-          echo "'${{ steps.check.outputs.raw_output }}'"
+          echo "Cantidad de instancias: ${{ steps.check.outputs.instance_count }}"
+          echo "Existe Minecraft-Server: ${{ steps.check.outputs.instance_exists }}"
           echo ""
-          echo "output:"
-          echo "'${{ steps.check.outputs.output }}'"
-          echo ""
-          echo "=========================================="
 
-          if [ "${{ steps.check.outputs.raw_output }}" = "0" ]; then
-            echo "NO EXISTE Minecraft-Server."
-            echo "Esto es lo esperado."
-            echo "El Hunter debera intentar crear la A1."
+          if [ "${{ steps.check.outputs.instance_exists }}" = "false" ]; then
+            echo "CORRECTO:"
+            echo "No existe Minecraft-Server."
+            echo "El siguiente paso del Hunter sera intentar crear la A1."
           else
-            echo "El resultado NO es 0."
-            echo "Todavia no vamos a crear ninguna instancia."
+            echo "CORRECTO:"
+            echo "Minecraft-Server ya existe."
+            echo "El Hunter no debe crear otra."
           fi
 
+          echo ""
           echo "=========================================="
 
       - name: Prueba terminada
@@ -62,7 +159,7 @@ jobs:
           echo "PRUEBA TERMINADA"
           echo "=========================================="
           echo ""
-          echo "No se intentara crear la A1 en esta ejecucion."
-          echo "Estamos comprobando la deteccion de instancias."
+          echo "Todavia NO se intentara crear la A1."
+          echo "Primero confirmamos que la deteccion funciona correctamente."
           echo ""
           echo "=========================================="
