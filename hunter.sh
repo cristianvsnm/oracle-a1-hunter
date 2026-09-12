@@ -6,7 +6,6 @@
 set -u
 
 TENANCY_ID="${OCI_TENANCY_OCID:-}"
-LAUNCH_JSON_FILE="./launch.json"
 INTERVAL_SECONDS=120
 LOG_FILE="./hunter.log"
 
@@ -21,8 +20,8 @@ log " Minecraft Server"
 log "============================================"
 log ""
 log "Region:       ${OCI_REGION:-desconocida}"
-log "Shape:        VM.Standard.A1.Flex"
-log "OCPU:         2  |  RAM: 12 GB  |  Disco: 50 GB"
+log "Shape:        ${OCI_SHAPE:-VM.Standard.A1.Flex}"
+log "OCPU:         ${OCI_OCPUS:-2}  |  RAM: ${OCI_MEMORY_GB:-12} GB  |  Disco: ${OCI_BOOT_VOLUME_GB:-50} GB"
 log "Reintento:    cada ${INTERVAL_SECONDS}s"
 log ""
 
@@ -36,11 +35,6 @@ fi
 
 if [ -z "$TENANCY_ID" ]; then
   log "ERROR: OCI_TENANCY_OCID no está definido."
-  exit 1
-fi
-
-if [ ! -f "$LAUNCH_JSON_FILE" ]; then
-  log "ERROR: no se encontró $LAUNCH_JSON_FILE"
   exit 1
 fi
 
@@ -96,10 +90,19 @@ for i in d['data']:
   # Intentar crear la instancia
   # ----------------------------------------------------------
   log ""
-  log "Intentando crear A1 Flex 2 OCPU / 12 GB..."
+  log "Intentando crear ${OCI_SHAPE:-VM.Standard.A1.Flex} ${OCI_OCPUS:-2} OCPU / ${OCI_MEMORY_GB:-12} GB..."
 
+  # Estrategia dual:
+  #  - Pasamos los flags requeridos por CLI (--compartment-id, --availability-domain,
+  #    --shape, --subnet-id) además del --from-json. Esto satisface la validación
+  #    del CLI cuando no reconoce bien el JSON anidado (bug conocido de --from-json
+  #    con createVnicDetails.subnetId).
   OUTPUT=$(oci compute instance launch \
       --from-json "file://$(pwd)/launch.json" \
+      --compartment-id "$OCI_COMPARTMENT_ID" \
+      --availability-domain "$OCI_AD" \
+      --shape "$OCI_SHAPE" \
+      --subnet-id "$OCI_SUBNET_ID" \
       --output json 2>&1)
   RC=$?
 
@@ -140,6 +143,15 @@ for i in d['data']:
   if echo "$OUTPUT" | grep -qE "NotAuthenticated|NotAuthorized|401|403"; then
     log ""
     log "ERROR DE AUTENTICACIÓN/AUTORIZACIÓN. Deteniendo."
+    exit 1
+  fi
+
+  # Error de CLI: "Missing option(s)" o "Unknown option"
+  # Salimos rápido para no entrar en bucle infinito con un JSON roto
+  if echo "$OUTPUT" | grep -qE "Usage: oci|Missing option|Unknown option|Invalid value for"; then
+    log ""
+    log "ERROR DE CONFIGURACIÓN del CLI/launch.json. Deteniendo el Hunter"
+    log "para evitar reintentos inútiles."
     exit 1
   fi
 
