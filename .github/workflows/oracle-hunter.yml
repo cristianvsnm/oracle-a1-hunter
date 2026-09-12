@@ -27,12 +27,12 @@ jobs:
         id: auth
         with:
           command: 'iam region list'
-          query: 'data[0]."name"'
+          query: 'data[0].name'
 
       - name: Mostrar region autenticada
         run: |
           echo "Autenticacion OCI correcta."
-          echo "Region: ${{ steps.auth.outputs.raw_output }}"
+          echo "Region autenticada correctamente."
 
 
       # ============================================================
@@ -44,7 +44,7 @@ jobs:
         id: check
         with:
           command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
-          query: 'length(data)'
+          query: 'to_string(length(data))'
 
       - name: Mostrar resultado de busqueda
         run: |
@@ -53,10 +53,10 @@ jobs:
 
 
       # ============================================================
-      # 3. Crear instancia si no existe
+      # 3. Intentar crear A1
       # ============================================================
 
-      - name: Crear A1
+      - name: Intentar crear A1
         if: steps.check.outputs.raw_output == '0'
         env:
           TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
