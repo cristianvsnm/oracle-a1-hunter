@@ -2,11 +2,10 @@ name: Oracle A1 Flex Hunter
 
 on:
   schedule:
-    # Cada 15 minutos (mínimo razonable en GH Actions)
+    # Cada 15 minutos (mínimo de GitHub Actions)
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
-# Permite que solo uno corra a la vez
 concurrency:
   group: oracle-hunter
   cancel-in-progress: false
@@ -14,7 +13,6 @@ concurrency:
 jobs:
   hunt:
     runs-on: ubuntu-latest
-    # 5h 50m (el máximo de GH Actions es 6h)
     timeout-minutes: 350
 
     steps:
@@ -33,11 +31,11 @@ jobs:
 
       - name: Configure OCI credentials
         env:
-          OCI_FINGERPRINT:   ${{ secrets.OCI_FINGERPRINT }}
-          OCI_PRIVATE_KEY:   ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_TENANCY_OCID:  ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_USER_OCID:     ${{ secrets.OCI_USER_OCID }}
-          OCI_REGION:        ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT:  ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY:  ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID:    ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION:       ${{ secrets.OCI_REGION }}
         run: |
           mkdir -p "$HOME/.oci"
           printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
@@ -53,19 +51,52 @@ jobs:
           EOF
           chmod 600 "$HOME/.oci/config"
 
-      - name: Write launch.json
+      - name: Write and validate launch.json
         env:
-          LAUNCH_JSON: ${{ secrets.LAUNCH_JSON }}
+          LAUNCH_JSON:      ${{ secrets.LAUNCH_JSON }}
+          OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
           printf '%s' "$LAUNCH_JSON" > launch.json
-          # Validación rápida
-          python -c "import json,sys; json.load(open('launch.json'))" \
-            && echo "launch.json OK" \
-            || { echo "launch.json inválido"; exit 1; }
+
+          python - <<'PY'
+          import json, os, sys
+
+          try:
+              d = json.load(open('launch.json'))
+          except Exception as e:
+              print("ERROR: launch.json inválido:", e)
+              sys.exit(1)
+
+          # Rechaza claves de Windows que no sirven con --from-json
+          if 'ssh-authorized-keys-file' in d:
+              print("ERROR: quita 'ssh-authorized-keys-file' del launch.json")
+              sys.exit(1)
+
+          # Inyecta la SSH pública desde el secret (por si no está en el JSON)
+          ssh_key = os.environ.get('OCI_SSH_PUBLIC_KEY', '').strip()
+          if ssh_key:
+              d.setdefault('metadata', {})['ssh_authorized_keys'] = ssh_key
+
+          # Validaciones mínimas
+          required = ['compartment-id', 'availability-domain', 'shape',
+                      'shape-config', 'source-details', 'create-vnic-details']
+          missing = [k for k in required if k not in d]
+          if missing:
+              print("ERROR: faltan claves en launch.json:", missing)
+              sys.exit(1)
+
+          if 'metadata' not in d or 'ssh_authorized_keys' not in d['metadata']:
+              print("ERROR: falta metadata.ssh_authorized_keys")
+              sys.exit(1)
+
+          json.dump(d, open('launch.json', 'w'), indent=2)
+          print("launch.json validado y normalizado OK")
+          PY
 
       - name: Run hunter
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_REGION:       ${{ secrets.OCI_REGION }}
         run: |
           chmod +x ./hunter.sh
           ./hunter.sh
