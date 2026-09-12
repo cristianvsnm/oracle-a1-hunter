@@ -50,7 +50,7 @@ jobs:
           EOF
           chmod 600 "$HOME/.oci/config"
 
-      - name: Write and validate launch.json
+      - name: Prepare launch parameters
         env:
           LAUNCH_JSON:        ${{ secrets.LAUNCH_JSON }}
           OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
@@ -67,16 +67,10 @@ jobs:
               print("ERROR: launch.json inválido:", e)
               sys.exit(1)
 
-          print("=== launch.json (claves top-level) ===")
-          for k in d:
-              print(" -", k)
-
           def norm_key(k):
               return k.replace('-', '').lower()
 
-          canonical = {}
-          for k, v in d.items():
-              canonical[norm_key(k)] = (k, v)
+          canonical = {norm_key(k): (k, v) for k, v in d.items()}
 
           def get(*names):
               for n in names:
@@ -94,47 +88,59 @@ jobs:
           metadata    = get('metadata') or {}
 
           if not all([compartment, ad, shape, shape_cfg, source, vnic]):
-              print("ERROR: faltan claves obligatorias.")
+              print("ERROR: faltan claves obligatorias en launch.json")
               sys.exit(1)
 
-          shape_cfg_norm = {}
-          for k, v in shape_cfg.items():
-              shape_cfg_norm[norm_key(k)] = v
+          shape_cfg_norm = {norm_key(k): v for k, v in shape_cfg.items()}
           ocpus = shape_cfg_norm.get('ocpus')
           mem   = shape_cfg_norm.get('memoryingbs') or shape_cfg_norm.get('memoryingb')
           if ocpus is None or mem is None:
-              print("ERROR: shape-config necesita ocpus y memory-in-gbs"); sys.exit(1)
+              print("ERROR: shape-config necesita ocpus y memory-in-gbs")
+              sys.exit(1)
 
-          src_norm = { norm_key(k): v for k, v in source.items() }
-          source_type = src_norm.get('sourcetype') or 'image'
+          src_norm = {norm_key(k): v for k, v in source.items()}
           image_id    = src_norm.get('imageid')
           bv_size     = src_norm.get('bootvolumesizeingbs') or 50
           if not image_id:
-              print("ERROR: source-details.image-id faltante"); sys.exit(1)
+              print("ERROR: source-details.image-id faltante")
+              sys.exit(1)
 
-          vnic_norm = { norm_key(k): v for k, v in vnic.items() }
+          vnic_norm = {norm_key(k): v for k, v in vnic.items()}
           subnet_id  = vnic_norm.get('subnetid')
-          assign_pub = vnic_norm.get('assignpublicip', True)
           if not subnet_id:
-              print("ERROR: create-vnic-details.subnet-id faltante"); sys.exit(1)
+              print("ERROR: create-vnic-details.subnet-id faltante")
+              sys.exit(1)
 
           ssh_key = os.environ.get('OCI_SSH_PUBLIC_KEY', '').strip()
           if not ssh_key:
               ssh_key = metadata.get('ssh_authorized_keys', '').strip()
           if not ssh_key:
-              print("ERROR: no hay SSH public key"); sys.exit(1)
+              print("ERROR: no hay SSH public key")
+              sys.exit(1)
 
-          # Guardar todos los valores para el shell
+          # --- Escribir archivos JSON para parámetros complejos ---
+          # 1) metadata.json
+          with open('metadata.json', 'w') as f:
+              json.dump({"ssh_authorized_keys": ssh_key}, f)
+
+          # 2) shape-config.json
+          with open('shape-config.json', 'w') as f:
+              json.dump({"ocpus": int(ocpus), "memoryInGBs": int(mem)}, f)
+
+          # 3) source-details.json (por si se necesita)
+          with open('source-details.json', 'w') as f:
+              json.dump({
+                  "sourceType": "image",
+                  "imageId": image_id,
+                  "bootVolumeSizeInGBs": int(bv_size)
+              }, f)
+
+          # Guardar valores simples para el shell
           with open('subnet.txt', 'w') as f:         f.write(subnet_id)
           with open('ad.txt', 'w') as f:             f.write(ad)
           with open('compartment.txt', 'w') as f:    f.write(compartment)
           with open('shape.txt', 'w') as f:          f.write(shape)
-          with open('ocpus.txt', 'w') as f:          f.write(str(ocpus))
-          with open('memory.txt', 'w') as f:         f.write(str(mem))
-          with open('image.txt', 'w') as f:          f.write(image_id)
-          with open('bvsize.txt', 'w') as f:         f.write(str(bv_size))
           with open('displayname.txt', 'w') as f:    f.write(display)
-          with open('sshkey.txt', 'w') as f:         f.write(ssh_key)
 
           print()
           print("=== Valores extraídos ===")
@@ -146,7 +152,9 @@ jobs:
           print("image:      ", image_id)
           print("subnet:     ", subnet_id)
           print("display:    ", display)
-          print("OK: valores extraídos.")
+          print()
+          print("Archivos JSON generados: metadata.json, shape-config.json, source-details.json")
+          print("OK: parámetros preparados.")
           PY
 
       - name: Run hunter
@@ -159,12 +167,7 @@ jobs:
           export OCI_AD="$(cat ad.txt)"
           export OCI_COMPARTMENT_ID="$(cat compartment.txt)"
           export OCI_SHAPE="$(cat shape.txt)"
-          export OCI_OCPUS="$(cat ocpus.txt)"
-          export OCI_MEMORY_GB="$(cat memory.txt)"
-          export OCI_IMAGE_ID="$(cat image.txt)"
-          export OCI_BOOT_VOLUME_GB="$(cat bvsize.txt)"
           export OCI_DISPLAY_NAME="$(cat displayname.txt)"
-          export OCI_SSH_KEY="$(cat sshkey.txt)"
           ./hunter.sh
 
       - name: Upload result
@@ -173,8 +176,10 @@ jobs:
         with:
           name: resultado-${{ github.run_id }}
           path: |
-            launch.json
             launch.raw.json
+            metadata.json
+            shape-config.json
+            source-details.json
             resultado.json
             hunter.log
           if-no-files-found: ignore
