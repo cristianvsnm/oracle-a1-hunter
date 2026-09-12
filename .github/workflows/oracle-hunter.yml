@@ -41,20 +41,27 @@ jobs:
         run: |
           echo "Comprobando autenticacion..."
           oci iam region list --output json > /dev/null
+
+          if [ "$?" -ne 0 ]; then
+            echo "Error de autenticacion con OCI."
+            exit 1
+          fi
+
           echo "Autenticacion correcta."
 
-      - name: Comprobar instancias existentes
+      - name: Comprobar instancia Minecraft
         id: check
         env:
           TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
         run: |
-          echo "Comprobando si ya existe una instancia..."
+          echo "Comprobando si ya existe Minecraft-Server..."
 
           set +e
 
-          oci compute instance list \
+          COUNT=$(oci compute instance list \
             --compartment-id "$TENANCY" \
-            --output json > instances.json 2>error.txt
+            --query "length(data[?\"display-name\" == 'Minecraft-Server'])" \
+            --output json 2>error.txt)
 
           STATUS=$?
 
@@ -64,20 +71,18 @@ jobs:
             exit 1
           fi
 
-          echo "Respuesta recibida correctamente."
+          echo "Respuesta de OCI recibida."
 
-          cat instances.json
+          if ! echo "$COUNT" | grep -qE '^[0-9]+$'; then
+            echo "La respuesta de OCI no contiene un numero valido:"
+            echo "$COUNT"
+            echo ""
+            echo "Error adicional:"
+            cat error.txt
+            exit 1
+          fi
 
-          COUNT=$(python3 -c '
-          import json
-
-          with open("instances.json", "r") as f:
-              data = json.load(f)
-
-          print(len(data.get("data", [])))
-          ')
-
-          echo "Instancias encontradas: $COUNT"
+          echo "Minecraft-Server encontradas: $COUNT"
 
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
@@ -125,22 +130,36 @@ jobs:
             echo "=========================================="
             echo "  A1 CREADA CORRECTAMENTE"
             echo "=========================================="
+            echo ""
+            echo "Oracle encontro capacidad."
+            echo "Minecraft-Server fue creada."
             exit 0
           fi
 
           if echo "$OUTPUT" | grep -qiE "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
             echo ""
-            echo "Sin capacidad para A1."
-            echo "Se volvera a intentar en aproximadamente 5 minutos."
+            echo "=========================================="
+            echo "  SIN CAPACIDAD A1"
+            echo "=========================================="
+            echo ""
+            echo "Oracle no tiene capacidad disponible."
+            echo "El Hunter volvera a intentarlo en aproximadamente 5 minutos."
             exit 0
           fi
 
           echo ""
-          echo "Oracle devolvio un error diferente."
+          echo "=========================================="
+          echo "  ERROR DIFERENTE DE CAPACIDAD"
+          echo "=========================================="
+          echo ""
+          echo "Oracle devolvio un error que debemos revisar."
           exit 1
 
-      - name: Ya existe una instancia
+      - name: Ya existe Minecraft-Server
         if: steps.check.outputs.count != '0'
         run: |
-          echo "Ya existe una instancia."
-          echo "El Hunter no creara otra."
+          echo "=========================================="
+          echo "  MINECRAFT-SERVER YA EXISTE"
+          echo "=========================================="
+          echo ""
+          echo "El Hunter no creara otra instancia."
