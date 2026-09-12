@@ -56,6 +56,7 @@ jobs:
           TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
         run: |
           echo "Comprobando si ya existe Minecraft-Server..."
+          echo ""
 
           set +e
 
@@ -63,7 +64,7 @@ jobs:
             --compartment-id "$TENANCY" \
             --display-name "Minecraft-Server" \
             --all \
-            --output json > instances.json 2>error.txt
+            --output table > instances.txt 2>error.txt
 
           STATUS=$?
 
@@ -74,21 +75,25 @@ jobs:
           fi
 
           echo "Consulta de instancias completada."
+          echo ""
 
-          COUNT=$(python3 -c '
-          import json
-
-          with open("instances.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
-
-          print(len(data.get("data", [])))
-          ')
-
-          if ! echo "$COUNT" | grep -qE '^[0-9]+$'; then
-            echo "No se pudo determinar el numero de instancias."
-            echo "Respuesta recibida:"
-            cat instances.json
+          # Comprobar si OCI realmente devolvio alguna respuesta.
+          if [ ! -s instances.txt ]; then
+            echo "ERROR: OCI no devolvio ninguna informacion."
+            echo ""
+            echo "La consulta termino correctamente, pero la respuesta esta vacia."
+            echo "No vamos a asumir que no existe la instancia."
+            echo ""
+            echo "Error adicional:"
+            cat error.txt
             exit 1
+          fi
+
+          # Buscar nuestra instancia por nombre.
+          if grep -Fq "Minecraft-Server" instances.txt; then
+            COUNT=1
+          else
+            COUNT=0
           fi
 
           echo "Minecraft-Server encontradas: $COUNT"
@@ -123,6 +128,7 @@ jobs:
           EOF
 
           echo "Intentando crear A1 Flex 2 OCPU / 12 GB..."
+          echo ""
 
           set +e
 
