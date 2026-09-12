@@ -35,6 +35,14 @@ jobs:
           region=sa-santiago-1
           EOF
 
+          chmod 600 ~/.oci/config
+
+      - name: Comprobar autenticacion OCI
+        run: |
+          echo "Comprobando autenticacion..."
+          oci iam region list --output json > /dev/null
+          echo "Autenticacion correcta."
+
       - name: Comprobar instancias existentes
         id: check
         env:
@@ -42,15 +50,26 @@ jobs:
         run: |
           echo "Comprobando si ya existe una instancia..."
 
-          INSTANCES=$(oci compute instance list \
+          set +e
+
+          OUTPUT=$(oci compute instance list \
             --compartment-id "$TENANCY" \
-            --output json)
+            --output json 2>&1)
 
-          echo "$INSTANCES"
+          STATUS=$?
 
-          COUNT=$(echo "$INSTANCES" | python3 -c '
+          if [ "$STATUS" -ne 0 ]; then
+            echo "$OUTPUT"
+            echo "No se pudo consultar Oracle."
+            exit 1
+          fi
+
+          echo "$OUTPUT"
+
+          COUNT=$(echo "$OUTPUT" | python3 -c '
           import sys
           import json
+
           data = json.load(sys.stdin)
           print(len(data.get("data", [])))
           ')
@@ -108,16 +127,16 @@ jobs:
           if echo "$OUTPUT" | grep -qiE "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
             echo ""
             echo "Sin capacidad para A1."
-            echo "El próximo intento será en aproximadamente 5 minutos."
+            echo "Se volvera a intentar en aproximadamente 5 minutos."
             exit 0
           fi
 
           echo ""
-          echo "Oracle devolvió un error diferente."
+          echo "Oracle devolvio un error diferente."
           exit 1
 
       - name: Ya existe una instancia
         if: steps.check.outputs.count != '0'
         run: |
           echo "Ya existe una instancia."
-          echo "El Hunter no creará otra."
+          echo "El Hunter no creara otra."
