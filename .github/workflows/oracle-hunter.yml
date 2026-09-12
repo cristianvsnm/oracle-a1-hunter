@@ -2,7 +2,6 @@ name: Oracle A1 Flex Hunter
 
 on:
   schedule:
-    # Cada 15 minutos (mínimo de GitHub Actions)
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
@@ -53,44 +52,127 @@ jobs:
 
       - name: Write and validate launch.json
         env:
-          LAUNCH_JSON:      ${{ secrets.LAUNCH_JSON }}
+          LAUNCH_JSON:        ${{ secrets.LAUNCH_JSON }}
           OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
-          printf '%s' "$LAUNCH_JSON" > launch.json
+          # Escribe el JSON tal cual viene del secret
+          printf '%s' "$LAUNCH_JSON" > launch.raw.json
 
           python - <<'PY'
           import json, os, sys
 
+          # 1) Parsear
+          raw = open('launch.raw.json', 'rb').read()
           try:
-              d = json.load(open('launch.json'))
+              d = json.loads(raw.decode('utf-8'))
           except Exception as e:
               print("ERROR: launch.json inválido:", e)
               sys.exit(1)
 
-          # Rechaza claves de Windows que no sirven con --from-json
-          if 'ssh-authorized-keys-file' in d:
-              print("ERROR: quita 'ssh-authorized-keys-file' del launch.json")
+          print("=== launch.json (claves top-level) ===")
+          for k in d:
+              print(" -", k)
+
+          # 2) Normalizar a camelCase (API shape)
+          #    Acepta tanto kebab-case como camelCase como entrada
+          def norm_key(k):
+              return k.replace('-', '').lower()
+
+          canonical = {}
+          for k, v in d.items():
+              canonical[norm_key(k)] = (k, v)
+
+          def get(*names):
+              for n in names:
+                  if norm_key(n) in canonical:
+                      return canonical[norm_key(n)][1]
+              return None
+
+          compartment = get('compartmentId', 'compartment-id')
+          ad          = get('availabilityDomain', 'availability-domain')
+          shape       = get('shape')
+          shape_cfg   = get('shapeConfig', 'shape-config')
+          source      = get('sourceDetails', 'source-details')
+          vnic        = get('createVnicDetails', 'create-vnic-details')
+          display     = get('displayName', 'display-name') or 'minecraft-server'
+          metadata    = get('metadata') or {}
+
+          if not all([compartment, ad, shape, shape_cfg, source, vnic]):
+              print("ERROR: faltan claves obligatorias.")
+              print("  compartment:", bool(compartment))
+              print("  ad:         ", bool(ad))
+              print("  shape:      ", bool(shape))
+              print("  shape-config:", bool(shape_cfg))
+              print("  source:     ", bool(source))
+              print("  vnic:       ", bool(vnic))
               sys.exit(1)
 
-          # Inyecta la SSH pública desde el secret (por si no está en el JSON)
+          # 3) Normalizar nested shape-config
+          shape_cfg_norm = {}
+          for k, v in shape_cfg.items():
+              shape_cfg_norm[norm_key(k)] = v
+          ocpus = shape_cfg_norm.get('ocpus')
+          mem   = shape_cfg_norm.get('memoryingbs') or shape_cfg_norm.get('memoryingb')
+          if ocpus is None or mem is None:
+              print("ERROR: shape-config necesita ocpus y memory-in-gbs"); sys.exit(1)
+
+          # 4) Normalizar source-details
+          src_norm = { norm_key(k): v for k, v in source.items() }
+          source_type = src_norm.get('sourcetype')
+          image_id    = src_norm.get('imageid')
+          bv_size     = src_norm.get('bootvolumesizeingbs') or 50
+          if not image_id:
+              print("ERROR: source-details.image-id faltante"); sys.exit(1)
+
+          # 5) Normalizar create-vnic-details
+          vnic_norm = { norm_key(k): v for k, v in vnic.items() }
+          subnet_id = vnic_norm.get('subnetid')
+          assign_pub = vnic_norm.get('assignpublicip', True)
+          if not subnet_id:
+              print("ERROR: create-vnic-details.subnet-id faltante"); sys.exit(1)
+
+          # 6) SSH key: prioridad al secret (más confiable)
           ssh_key = os.environ.get('OCI_SSH_PUBLIC_KEY', '').strip()
-          if ssh_key:
-              d.setdefault('metadata', {})['ssh_authorized_keys'] = ssh_key
+          if not ssh_key:
+              ssh_key = metadata.get('ssh_authorized_keys', '').strip()
+          if not ssh_key:
+              print("ERROR: no hay SSH public key (ni secret ni metadata)"); sys.exit(1)
 
-          # Validaciones mínimas
-          required = ['compartment-id', 'availability-domain', 'shape',
-                      'shape-config', 'source-details', 'create-vnic-details']
-          missing = [k for k in required if k not in d]
-          if missing:
-              print("ERROR: faltan claves en launch.json:", missing)
-              sys.exit(1)
+          # 7) Construir JSON final en camelCase (API shape)
+          final = {
+              "compartmentId":      compartment,
+              "availabilityDomain": ad,
+              "displayName":        display,
+              "shape":              shape,
+              "shapeConfig": {
+                  "ocpus":       ocpus,
+                  "memoryInGBs": mem,
+              },
+              "sourceDetails": {
+                  "sourceType":          source_type or "image",
+                  "imageId":             image_id,
+                  "bootVolumeSizeInGBs": bv_size,
+              },
+              "createVnicDetails": {
+                  "subnetId":       subnet_id,
+                  "assignPublicIp": assign_pub,
+              },
+              "metadata": {
+                  "ssh_authorized_keys": ssh_key,
+              },
+          }
 
-          if 'metadata' not in d or 'ssh_authorized_keys' not in d['metadata']:
-              print("ERROR: falta metadata.ssh_authorized_keys")
-              sys.exit(1)
+          json.dump(final, open('launch.json', 'w'), indent=2)
 
-          json.dump(d, open('launch.json', 'w'), indent=2)
-          print("launch.json validado y normalizado OK")
+          # 8) Print sanitizado
+          print()
+          print("=== launch.json normalizado (SSH redactada) ===")
+          safe = json.loads(json.dumps(final))
+          safe['metadata']['ssh_authorized_keys'] = \
+              safe['metadata']['ssh_authorized_keys'][:30] + '...[redacted]'
+          print(json.dumps(safe, indent=2))
+          print()
+          print("OK: launch.json listo.")
           PY
 
       - name: Run hunter
@@ -107,6 +189,8 @@ jobs:
         with:
           name: resultado-${{ github.run_id }}
           path: |
+            launch.json
+            launch.raw.json
             resultado.json
             hunter.log
           if-no-files-found: ignore
