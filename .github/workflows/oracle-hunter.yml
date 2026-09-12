@@ -27,9 +27,8 @@ jobs:
         id: auth
         with:
           command: 'iam region list'
-          query: 'data[0].name'
 
-      - name: Mostrar region autenticada
+      - name: Mostrar resultado autenticacion
         run: |
           echo "Autenticacion OCI correcta."
           echo "Region autenticada correctamente."
@@ -44,116 +43,58 @@ jobs:
         id: check
         with:
           command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
-          query: 'to_string(length(data))'
+
+
+      # ============================================================
+      # 3. Mostrar exactamente lo que entrega la Action
+      # ============================================================
 
       - name: Mostrar resultado de busqueda
         run: |
-          echo "Resultado de busqueda:"
-          echo "Instancias encontradas: ${{ steps.check.outputs.raw_output }}"
-
-
-      # ============================================================
-      # 3. Intentar crear A1
-      # ============================================================
-
-      - name: Intentar crear A1
-        if: steps.check.outputs.raw_output == '0'
-        env:
-          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
-        run: |
-
-          cat > launch.json <<EOF
-          {
-            "compartmentId": "$TENANCY",
-            "availabilityDomain": "hCBe:SA-SANTIAGO-1-AD-1",
-            "subnetId": "ocid1.subnet.oc1.sa-santiago-1.aaaaaaaaasyt2fbayfh4dajopuckixys4d7hk5grd5zpxjavlui5k4nxx6da",
-            "shape": "VM.Standard.A1.Flex",
-            "shapeConfig": {
-              "ocpus": 2.0,
-              "memoryInGBs": 12.0
-            },
-            "displayName": "Minecraft-Server",
-            "assignPublicIp": true,
-            "sshAuthorizedKeys": "$SSH_PUBLIC_KEY",
-            "sourceDetails": {
-              "sourceType": "image",
-              "imageId": "ocid1.image.oc1.sa-santiago-1.aaaaaaaaqsi25a3dcxzdtdsra64vtyqdm7bo6oqfxvshxa5uidgihgaob5jq",
-              "bootVolumeSizeInGBs": 50
-            }
-          }
-          EOF
-
           echo "=========================================="
-          echo "Intentando crear Minecraft-Server"
-          echo "A1 Flex - 2 OCPU / 12 GB RAM"
+          echo "RESULTADO DE BUSQUEDA"
           echo "=========================================="
           echo ""
 
-          set +e
+          echo "raw_output:"
+          echo "'${{ steps.check.outputs.raw_output }}'"
 
-          OUTPUT=$(oci compute instance launch \
-            --from-json file://launch.json \
-            --output json 2>&1)
+          echo ""
+          echo "output:"
+          echo "'${{ steps.check.outputs.output }}'"
 
-          STATUS=$?
+          echo ""
+          echo "=========================================="
 
-          echo "$OUTPUT"
-
-          # --------------------------------------------------------
-          # Creacion correcta
-          # --------------------------------------------------------
-
-          if [ "$STATUS" -eq 0 ]; then
-            echo ""
-            echo "=========================================="
-            echo "       A1 CREADA CORRECTAMENTE"
-            echo "=========================================="
-            echo ""
-            echo "Oracle encontro capacidad."
-            echo "Minecraft-Server fue creada."
-            exit 0
+          if [ -z "${{ steps.check.outputs.raw_output }}" ]; then
+            echo "raw_output esta VACIO."
+          else
+            echo "raw_output contiene datos."
           fi
 
-          # --------------------------------------------------------
-          # Sin capacidad
-          # --------------------------------------------------------
-
-          if echo "$OUTPUT" | grep -qiE \
-            "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
-
-            echo ""
-            echo "=========================================="
-            echo "          SIN CAPACIDAD A1"
-            echo "=========================================="
-            echo ""
-            echo "Oracle no tiene capacidad disponible."
-            echo "El Hunter volvera a intentarlo en aproximadamente 5 minutos."
-            exit 0
+          if [ -z "${{ steps.check.outputs.output }}" ]; then
+            echo "output esta VACIO."
+          else
+            echo "output contiene datos."
           fi
 
-          # --------------------------------------------------------
-          # Otro error
-          # --------------------------------------------------------
-
-          echo ""
           echo "=========================================="
-          echo "       ERROR DE ORACLE OCI"
-          echo "=========================================="
-          echo ""
-          echo "Oracle devolvio un error diferente."
-          exit 1
 
 
       # ============================================================
-      # 4. Ya existe
+      # 4. DETENIDO TEMPORALMENTE
+      #
+      # No intentamos crear la instancia todavía.
+      # Primero necesitamos ver exactamente qué devuelve
+      # oracle-actions/run-oci-cli-command.
       # ============================================================
 
-      - name: Minecraft-Server ya existe
-        if: steps.check.outputs.raw_output != '0'
+      - name: Prueba terminada
         run: |
+          echo ""
           echo "=========================================="
-          echo "     MINECRAFT-SERVER YA EXISTE"
+          echo "PRUEBA TERMINADA"
           echo "=========================================="
           echo ""
-          echo "El Hunter no creara otra instancia."
+          echo "No se intentara crear la A1 en esta ejecucion."
+          echo "Estamos comprobando la salida de la Action de Oracle."
