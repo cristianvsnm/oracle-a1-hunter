@@ -15,29 +15,48 @@ jobs:
     timeout-minutes: 350
 
     steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # ==========================================================
+      # PYTHON
+      # ==========================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install OCI CLI
+
+      # ==========================================================
+      # OCI CLI
+      # ==========================================================
+      - name: Instalar OCI CLI
         run: |
+          python -m pip install --upgrade pip
           pip install --quiet oci-cli
           oci --version
 
-      - name: Configure OCI credentials
+
+      # ==========================================================
+      # CREDENCIALES OCI
+      # ==========================================================
+      - name: Configurar credenciales OCI
         env:
-          OCI_FINGERPRINT:  ${{ secrets.OCI_FINGERPRINT }}
-          OCI_PRIVATE_KEY:  ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_USER_OCID:    ${{ secrets.OCI_USER_OCID }}
-          OCI_REGION:       ${{ secrets.OCI_REGION }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
         run: |
           mkdir -p "$HOME/.oci"
+
           printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
+
           chmod 600 "$HOME/.oci/oci_api_key.pem"
 
           cat > "$HOME/.oci/config" <<EOF
@@ -48,138 +67,192 @@ jobs:
           region=$OCI_REGION
           key_file=$HOME/.oci/oci_api_key.pem
           EOF
+
           chmod 600 "$HOME/.oci/config"
 
-      - name: Prepare launch parameters
+          echo "Configuracion OCI creada correctamente."
+
+
+      # ==========================================================
+      # COMPROBAR AUTENTICACION
+      # ==========================================================
+      - name: Comprobar autenticacion OCI
         env:
-          LAUNCH_JSON:        ${{ secrets.LAUNCH_JSON }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          echo "============================================"
+          echo " COMPROBANDO OCI"
+          echo "============================================"
+          echo ""
+
+          oci iam region list \
+            --query "data[?name=='$OCI_REGION'].name" \
+            --output json
+
+          echo ""
+          echo "Autenticacion OCI correcta."
+
+
+      # ==========================================================
+      # PREPARAR LAUNCH JSON
+      #
+      # LAUNCH_JSON contiene el JSON completo generado desde
+      # Windows.
+      #
+      # Aqui solamente corregimos la ruta de SSH para que sea
+      # valida dentro del runner Ubuntu.
+      # ==========================================================
+      - name: Preparar launch.json
+        env:
+          LAUNCH_JSON: ${{ secrets.LAUNCH_JSON }}
           OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
           printf '%s' "$LAUNCH_JSON" > launch.raw.json
 
-          python - <<'PY'
-          import json, os, sys
+          printf '%s\n' "$OCI_SSH_PUBLIC_KEY" > ssh_authorized_keys.pub
 
-          raw = open('launch.raw.json', 'rb').read()
+          chmod 600 launch.raw.json
+          chmod 644 ssh_authorized_keys.pub
+
+          python - <<'PY'
+          import json
+          import sys
+
+          input_file = "launch.raw.json"
+          output_file = "launch-request.json"
+
           try:
-              d = json.loads(raw.decode('utf-8'))
+              with open(input_file, "r", encoding="utf-8") as f:
+                  data = json.load(f)
           except Exception as e:
-              print("ERROR: launch.json inválido:", e)
+              print("ERROR: LAUNCH_JSON no contiene JSON valido.")
+              print(e)
               sys.exit(1)
 
-          def norm_key(k):
-              return k.replace('-', '').lower()
+          if not isinstance(data, dict):
+              print("ERROR: LAUNCH_JSON debe ser un objeto JSON.")
+              sys.exit(1)
 
-          canonical = {norm_key(k): (k, v) for k, v in d.items()}
-
-          def get(*names):
-              for n in names:
-                  if norm_key(n) in canonical:
-                      return canonical[norm_key(n)][1]
+          # ------------------------------------------------------
+          # Normalizar las posibles variantes de nombres
+          # ------------------------------------------------------
+          def find_key(*names):
+              for name in names:
+                  if name in data:
+                      return name
               return None
 
-          compartment = get('compartmentId', 'compartment-id')
-          ad          = get('availabilityDomain', 'availability-domain')
-          shape       = get('shape')
-          shape_cfg   = get('shapeConfig', 'shape-config')
-          source      = get('sourceDetails', 'source-details')
-          vnic        = get('createVnicDetails', 'create-vnic-details')
-          display     = get('displayName', 'display-name') or 'minecraft-server'
-          metadata    = get('metadata') or {}
+          # ------------------------------------------------------
+          # Comprobaciones
+          # ------------------------------------------------------
+          required = [
+              "compartmentId",
+              "availabilityDomain",
+              "subnetId",
+              "shape",
+              "shapeConfig",
+              "sourceDetails"
+          ]
 
-          if not all([compartment, ad, shape, shape_cfg, source, vnic]):
-              print("ERROR: faltan claves obligatorias en launch.json")
+          missing = [key for key in required if key not in data]
+
+          if missing:
+              print("ERROR: faltan campos obligatorios en LAUNCH_JSON:")
+              for key in missing:
+                  print(" -", key)
               sys.exit(1)
 
-          shape_cfg_norm = {norm_key(k): v for k, v in shape_cfg.items()}
-          ocpus = shape_cfg_norm.get('ocpus')
-          mem   = shape_cfg_norm.get('memoryingbs') or shape_cfg_norm.get('memoryingb')
-          if ocpus is None or mem is None:
-              print("ERROR: shape-config necesita ocpus y memory-in-gbs")
-              sys.exit(1)
+          # ------------------------------------------------------
+          # SSH
+          #
+          # El JSON original fue generado en Windows y puede
+          # contener C:\Users\...
+          #
+          # Lo reemplazamos por el archivo que acabamos de crear
+          # dentro del runner Linux.
+          # ------------------------------------------------------
+          data["sshAuthorizedKeysFile"] = "ssh_authorized_keys.pub"
 
-          src_norm = {norm_key(k): v for k, v in source.items()}
-          image_id    = src_norm.get('imageid')
-          bv_size     = src_norm.get('bootvolumesizeingbs') or 50
-          if not image_id:
-              print("ERROR: source-details.image-id faltante")
-              sys.exit(1)
+          # Si venia metadata con ssh_authorized_keys, eliminamos
+          # esa posibilidad para evitar duplicidad.
+          metadata_key = find_key("metadata")
 
-          vnic_norm = {norm_key(k): v for k, v in vnic.items()}
-          subnet_id  = vnic_norm.get('subnetid')
-          if not subnet_id:
-              print("ERROR: create-vnic-details.subnet-id faltante")
-              sys.exit(1)
+          if metadata_key is not None:
+              metadata = data.get(metadata_key)
 
-          ssh_key = os.environ.get('OCI_SSH_PUBLIC_KEY', '').strip()
-          if not ssh_key:
-              ssh_key = metadata.get('ssh_authorized_keys', '').strip()
-          if not ssh_key:
-              print("ERROR: no hay SSH public key")
-              sys.exit(1)
+              if isinstance(metadata, dict):
+                  metadata.pop("ssh_authorized_keys", None)
 
-          # --- Escribir archivos JSON para parámetros complejos ---
-          # 1) metadata.json
-          with open('metadata.json', 'w') as f:
-              json.dump({"ssh_authorized_keys": ssh_key}, f)
+                  if not metadata:
+                      data.pop(metadata_key, None)
 
-          # 2) shape-config.json
-          with open('shape-config.json', 'w') as f:
-              json.dump({"ocpus": int(ocpus), "memoryInGBs": int(mem)}, f)
+          # ------------------------------------------------------
+          # Nombre fijo del servidor
+          # ------------------------------------------------------
+          data["displayName"] = "Minecraft-Server"
 
-          # 3) source-details.json (por si se necesita)
-          with open('source-details.json', 'w') as f:
-              json.dump({
-                  "sourceType": "image",
-                  "imageId": image_id,
-                  "bootVolumeSizeInGBs": int(bv_size)
-              }, f)
+          # ------------------------------------------------------
+          # Guardar JSON final
+          # ------------------------------------------------------
+          with open(output_file, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2, ensure_ascii=False)
 
-          # Guardar valores simples para el shell
-          with open('subnet.txt', 'w') as f:         f.write(subnet_id)
-          with open('ad.txt', 'w') as f:             f.write(ad)
-          with open('compartment.txt', 'w') as f:    f.write(compartment)
-          with open('shape.txt', 'w') as f:          f.write(shape)
-          with open('displayname.txt', 'w') as f:    f.write(display)
-
-          print()
-          print("=== Valores extraídos ===")
-          print("compartment:", compartment)
-          print("ad:         ", ad)
-          print("shape:      ", shape)
-          print("ocpus:      ", ocpus)
-          print("memory:     ", mem, "GB")
-          print("image:      ", image_id)
-          print("subnet:     ", subnet_id)
-          print("display:    ", display)
-          print()
-          print("Archivos JSON generados: metadata.json, shape-config.json, source-details.json")
-          print("OK: parámetros preparados.")
+          print("============================================")
+          print(" LAUNCH JSON PREPARADO")
+          print("============================================")
+          print("")
+          print("Archivo:", output_file)
+          print("Shape:", data.get("shape"))
+          print("DisplayName:", data.get("displayName"))
+          print("AvailabilityDomain:", data.get("availabilityDomain"))
+          print("Subnet:", data.get("subnetId"))
+          print("Image:", data.get("sourceDetails", {}).get("imageId"))
+          print("OCPUs:", data.get("shapeConfig", {}).get("ocpus"))
+          print("RAM:", data.get("shapeConfig", {}).get("memoryInGBs"), "GB")
+          print("SSH:", data.get("sshAuthorizedKeysFile"))
+          print("")
+          print("JSON valido.")
           PY
 
-      - name: Run hunter
+
+      # ==========================================================
+      # VALIDAR EL LAUNCH JSON SIN CREAR NADA
+      # ==========================================================
+      - name: Validar launch-request.json
+        run: |
+          python -m json.tool launch-request.json > /dev/null
+
+          echo "============================================"
+          echo " launch-request.json VALIDO"
+          echo "============================================"
+
+
+      # ==========================================================
+      # EJECUTAR HUNTER
+      # ==========================================================
+      - name: Ejecutar Hunter
         env:
-          OCI_TENANCY_OCID:    ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_REGION:          ${{ secrets.OCI_REGION }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_DISPLAY_NAME: Minecraft-Server
+          INTERVAL_SECONDS: 120
         run: |
           chmod +x ./hunter.sh
-          export OCI_SUBNET_ID="$(cat subnet.txt)"
-          export OCI_AD="$(cat ad.txt)"
-          export OCI_COMPARTMENT_ID="$(cat compartment.txt)"
-          export OCI_SHAPE="$(cat shape.txt)"
-          export OCI_DISPLAY_NAME="$(cat displayname.txt)"
           ./hunter.sh
 
-      - name: Upload result
+
+      # ==========================================================
+      # GUARDAR RESULTADOS
+      # ==========================================================
+      - name: Subir resultados
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: resultado-${{ github.run_id }}
           path: |
             launch.raw.json
-            metadata.json
-            shape-config.json
-            source-details.json
+            launch-request.json
+            ssh_authorized_keys.pub
             resultado.json
             hunter.log
           if-no-files-found: ignore
