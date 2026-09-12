@@ -1,12 +1,10 @@
 name: Oracle A1 Hunter
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  hunt:
+  hunter:
     runs-on: ubuntu-latest
 
     env:
@@ -17,84 +15,38 @@ jobs:
       OCI_CLI_REGION: sa-santiago-1
 
     steps:
-
-      # ============================================================
-      # 1. Comprobar autenticacion
-      # ============================================================
-
       - name: Comprobar autenticacion OCI
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: auth
         with:
           command: 'iam region list'
 
-      - name: Mostrar resultado autenticacion
-        run: |
-          echo "Autenticacion OCI correcta."
-          echo "Region autenticada correctamente."
-
-
-      # ============================================================
-      # 2. Buscar Minecraft-Server
-      # ============================================================
-
       - name: Buscar Minecraft-Server
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: check
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
+          query: 'data[0].id || `NONE`'
 
-
-      # ============================================================
-      # 3. Mostrar exactamente lo que entrega la Action
-      # ============================================================
-
-      - name: Mostrar resultado de busqueda
+      - name: Mostrar resultado
         run: |
           echo "=========================================="
-          echo "RESULTADO DE BUSQUEDA"
+          echo "RESULTADO"
           echo "=========================================="
           echo ""
-
           echo "raw_output:"
           echo "'${{ steps.check.outputs.raw_output }}'"
-
           echo ""
           echo "output:"
           echo "'${{ steps.check.outputs.output }}'"
-
           echo ""
           echo "=========================================="
 
-          if [ -z "${{ steps.check.outputs.raw_output }}" ]; then
-            echo "raw_output esta VACIO."
+          if [ "${{ steps.check.outputs.raw_output }}" = "NONE" ]; then
+            echo "NO EXISTE Minecraft-Server."
+            echo "Esto es correcto: el Hunter debe intentar crearla."
           else
-            echo "raw_output contiene datos."
-          fi
-
-          if [ -z "${{ steps.check.outputs.output }}" ]; then
-            echo "output esta VACIO."
-          else
-            echo "output contiene datos."
+            echo "Minecraft-Server EXISTE."
+            echo "El Hunter no debe crear otra."
           fi
 
           echo "=========================================="
-
-
-      # ============================================================
-      # 4. DETENIDO TEMPORALMENTE
-      #
-      # No intentamos crear la instancia todavía.
-      # Primero necesitamos ver exactamente qué devuelve
-      # oracle-actions/run-oci-cli-command.
-      # ============================================================
-
-      - name: Prueba terminada
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "PRUEBA TERMINADA"
-          echo "=========================================="
-          echo ""
-          echo "No se intentara crear la A1 en esta ejecucion."
-          echo "Estamos comprobando la salida de la Action de Oracle."
