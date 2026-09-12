@@ -40,6 +40,7 @@ jobs:
       - name: Comprobar autenticacion OCI
         run: |
           echo "Comprobando autenticacion..."
+
           oci iam region list --output json > /dev/null
 
           if [ "$?" -ne 0 ]; then
@@ -49,7 +50,7 @@ jobs:
 
           echo "Autenticacion correcta."
 
-      - name: Comprobar instancia Minecraft
+      - name: Comprobar Minecraft-Server
         id: check
         env:
           TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
@@ -58,10 +59,11 @@ jobs:
 
           set +e
 
-          COUNT=$(oci compute instance list \
+          oci compute instance list \
             --compartment-id "$TENANCY" \
-            --query "length(data[?\"display-name\" == 'Minecraft-Server'])" \
-            --output json 2>error.txt)
+            --display-name "Minecraft-Server" \
+            --all \
+            --output json > instances.json 2>error.txt
 
           STATUS=$?
 
@@ -71,14 +73,21 @@ jobs:
             exit 1
           fi
 
-          echo "Respuesta de OCI recibida."
+          echo "Consulta de instancias completada."
+
+          COUNT=$(python3 -c '
+          import json
+
+          with open("instances.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          print(len(data.get("data", [])))
+          ')
 
           if ! echo "$COUNT" | grep -qE '^[0-9]+$'; then
-            echo "La respuesta de OCI no contiene un numero valido:"
-            echo "$COUNT"
-            echo ""
-            echo "Error adicional:"
-            cat error.txt
+            echo "No se pudo determinar el numero de instancias."
+            echo "Respuesta recibida:"
+            cat instances.json
             exit 1
           fi
 
