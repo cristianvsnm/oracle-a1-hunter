@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 # Oracle Cloud A1 Flex Hunter - GitHub Actions
+# Comando construido 100% con flags explícitos (sin --from-json)
 # ============================================================
 
 set -u
@@ -35,6 +36,11 @@ fi
 
 if [ -z "$TENANCY_ID" ]; then
   log "ERROR: OCI_TENANCY_OCID no está definido."
+  exit 1
+fi
+
+if [ -z "${OCI_SUBNET_ID:-}" ]; then
+  log "ERROR: OCI_SUBNET_ID no está definido."
   exit 1
 fi
 
@@ -87,22 +93,22 @@ for i in d['data']:
   fi
 
   # ----------------------------------------------------------
-  # Intentar crear la instancia
+  # Intentar crear la instancia (100% flags explícitos)
   # ----------------------------------------------------------
   log ""
   log "Intentando crear ${OCI_SHAPE:-VM.Standard.A1.Flex} ${OCI_OCPUS:-2} OCPU / ${OCI_MEMORY_GB:-12} GB..."
 
-  # Estrategia dual:
-  #  - Pasamos los flags requeridos por CLI (--compartment-id, --availability-domain,
-  #    --shape, --subnet-id) además del --from-json. Esto satisface la validación
-  #    del CLI cuando no reconoce bien el JSON anidado (bug conocido de --from-json
-  #    con createVnicDetails.subnetId).
   OUTPUT=$(oci compute instance launch \
-      --from-json "file://$(pwd)/launch.json" \
       --compartment-id "$OCI_COMPARTMENT_ID" \
       --availability-domain "$OCI_AD" \
       --shape "$OCI_SHAPE" \
+      --shape-config "{\"ocpus\": ${OCI_OCPUS}, \"memoryInGBs\": ${OCI_MEMORY_GB}}" \
       --subnet-id "$OCI_SUBNET_ID" \
+      --image-id "$OCI_IMAGE_ID" \
+      --boot-volume-size-in-gbs "${OCI_BOOT_VOLUME_GB:-50}" \
+      --assign-public-ip true \
+      --display-name "${OCI_DISPLAY_NAME:-minecraft-server}" \
+      --metadata "{\"ssh_authorized_keys\": \"${OCI_SSH_KEY}\"}" \
       --output json 2>&1)
   RC=$?
 
@@ -146,12 +152,11 @@ for i in d['data']:
     exit 1
   fi
 
-  # Error de CLI: "Missing option(s)" o "Unknown option"
-  # Salimos rápido para no entrar en bucle infinito con un JSON roto
-  if echo "$OUTPUT" | grep -qE "Usage: oci|Missing option|Unknown option|Invalid value for"; then
+  # Errores de configuración: abortar para no entrar en bucle
+  if echo "$OUTPUT" | grep -qE "Usage: oci|Missing option|Unknown option|Invalid value for|CannotParseRequest"; then
     log ""
-    log "ERROR DE CONFIGURACIÓN del CLI/launch.json. Deteniendo el Hunter"
-    log "para evitar reintentos inútiles."
+    log "ERROR DE CONFIGURACIÓN. Deteniendo el Hunter."
+    log "Revisa los parámetros del comando de creación."
     exit 1
   fi
 
