@@ -15,22 +15,25 @@ jobs:
       OCI_CLI_REGION: sa-santiago-1
 
     steps:
+
       - name: Comprobar autenticacion OCI
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: 'iam region list'
+          silent: false
 
       - name: Buscar Minecraft-Server
         id: check
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
-          query: 'data[0].id || `NONE`'
+          query: 'length(data)'
+          silent: false
 
       - name: Mostrar resultado
         run: |
           echo "=========================================="
-          echo "RESULTADO"
+          echo "RESULTADO DE BUSQUEDA"
           echo "=========================================="
           echo ""
           echo "raw_output:"
@@ -41,12 +44,25 @@ jobs:
           echo ""
           echo "=========================================="
 
-          if [ "${{ steps.check.outputs.raw_output }}" = "NONE" ]; then
+          if [ "${{ steps.check.outputs.raw_output }}" = "0" ]; then
             echo "NO EXISTE Minecraft-Server."
-            echo "Esto es correcto: el Hunter debe intentar crearla."
+            echo "Esto es lo esperado."
+            echo "El Hunter debera intentar crear la A1."
           else
-            echo "Minecraft-Server EXISTE."
-            echo "El Hunter no debe crear otra."
+            echo "El resultado NO es 0."
+            echo "Todavia no vamos a crear ninguna instancia."
           fi
 
+          echo "=========================================="
+
+      - name: Prueba terminada
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "PRUEBA TERMINADA"
+          echo "=========================================="
+          echo ""
+          echo "No se intentara crear la A1 en esta ejecucion."
+          echo "Estamos comprobando la deteccion de instancias."
+          echo ""
           echo "=========================================="
