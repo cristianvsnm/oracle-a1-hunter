@@ -1,0 +1,123 @@
+name: Oracle A1 Hunter
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Instalar OCI CLI
+        run: |
+          python3 -m pip install --upgrade oci-cli
+
+      - name: Configurar OCI
+        env:
+          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          USER: ${{ secrets.OCI_USER_OCID }}
+          FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+
+          printf '%s\n' "$PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$USER
+          fingerprint=$FINGERPRINT
+          key_file=/home/runner/.oci/oci_api_key.pem
+          tenancy=$TENANCY
+          region=sa-santiago-1
+          EOF
+
+      - name: Comprobar instancias existentes
+        id: check
+        env:
+          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+        run: |
+          echo "Comprobando si ya existe una instancia..."
+
+          INSTANCES=$(oci compute instance list \
+            --compartment-id "$TENANCY" \
+            --output json)
+
+          echo "$INSTANCES"
+
+          COUNT=$(echo "$INSTANCES" | python3 -c '
+          import sys
+          import json
+          data = json.load(sys.stdin)
+          print(len(data.get("data", [])))
+          ')
+
+          echo "Instancias encontradas: $COUNT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Intentar crear A1
+        if: steps.check.outputs.count == '0'
+        env:
+          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+        run: |
+          cat > launch.json <<EOF
+          {
+            "compartmentId": "$TENANCY",
+            "availabilityDomain": "hCBe:SA-SANTIAGO-1-AD-1",
+            "subnetId": "ocid1.subnet.oc1.sa-santiago-1.aaaaaaaaasyt2fbayfh4dajopuckixys4d7hk5grd5zpxjavlui5k4nxx6da",
+            "shape": "VM.Standard.A1.Flex",
+            "shapeConfig": {
+              "ocpus": 2.0,
+              "memoryInGBs": 12.0
+            },
+            "displayName": "Minecraft-Server",
+            "assignPublicIp": true,
+            "sshAuthorizedKeys": "$SSH_PUBLIC_KEY",
+            "sourceDetails": {
+              "sourceType": "image",
+              "imageId": "ocid1.image.oc1.sa-santiago-1.aaaaaaaaqsi25a3dcxzdtdsra64vtyqdm7bo6oqfxvshxa5uidgihgaob5jq",
+              "bootVolumeSizeInGBs": 50
+            }
+          }
+          EOF
+
+          echo "Intentando crear A1 Flex 2 OCPU / 12 GB..."
+
+          set +e
+
+          OUTPUT=$(oci compute instance launch \
+            --from-json file://launch.json \
+            --output json 2>&1)
+
+          STATUS=$?
+
+          echo "$OUTPUT"
+
+          if [ "$STATUS" -eq 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "  A1 CREADA CORRECTAMENTE"
+            echo "=========================================="
+            exit 0
+          fi
+
+          if echo "$OUTPUT" | grep -qiE "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
+            echo ""
+            echo "Sin capacidad para A1."
+            echo "El próximo intento será en aproximadamente 5 minutos."
+            exit 0
+          fi
+
+          echo ""
+          echo "Oracle devolvió un error diferente."
+          exit 1
+
+      - name: Ya existe una instancia
+        if: steps.check.outputs.count != '0'
+        run: |
+          echo "Ya existe una instancia."
+          echo "El Hunter no creará otra."
