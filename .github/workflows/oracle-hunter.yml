@@ -74,7 +74,6 @@ jobs:
               print(" -", k)
 
           # 2) Normalizar a camelCase (API shape)
-          #    Acepta tanto kebab-case como camelCase como entrada
           def norm_key(k):
               return k.replace('-', '').lower()
 
@@ -126,7 +125,7 @@ jobs:
 
           # 5) Normalizar create-vnic-details
           vnic_norm = { norm_key(k): v for k, v in vnic.items() }
-          subnet_id = vnic_norm.get('subnetid')
+          subnet_id  = vnic_norm.get('subnetid')
           assign_pub = vnic_norm.get('assignpublicip', True)
           if not subnet_id:
               print("ERROR: create-vnic-details.subnet-id faltante"); sys.exit(1)
@@ -172,6 +171,27 @@ jobs:
               safe['metadata']['ssh_authorized_keys'][:30] + '...[redacted]'
           print(json.dumps(safe, indent=2))
           print()
+
+          # 9) Guardar subnetId y todos los datos clave para el shell
+          with open('subnet.txt', 'w') as f:
+              f.write(subnet_id)
+          with open('ad.txt', 'w') as f:
+              f.write(ad)
+          with open('compartment.txt', 'w') as f:
+              f.write(compartment)
+          with open('shape.txt', 'w') as f:
+              f.write(shape)
+          with open('ocpus.txt', 'w') as f:
+              f.write(str(ocpus))
+          with open('memory.txt', 'w') as f:
+              f.write(str(mem))
+          with open('image.txt', 'w') as f:
+              f.write(image_id)
+          with open('bvsize.txt', 'w') as f:
+              f.write(str(bv_size))
+          with open('displayname.txt', 'w') as f:
+              f.write(display)
+
           print("OK: launch.json listo.")
           PY
 
@@ -181,6 +201,15 @@ jobs:
           OCI_REGION:       ${{ secrets.OCI_REGION }}
         run: |
           chmod +x ./hunter.sh
+          export OCI_SUBNET_ID="$(cat subnet.txt)"
+          export OCI_AD="$(cat ad.txt)"
+          export OCI_COMPARTMENT_ID="$(cat compartment.txt)"
+          export OCI_SHAPE="$(cat shape.txt)"
+          export OCI_OCPUS="$(cat ocpus.txt)"
+          export OCI_MEMORY_GB="$(cat memory.txt)"
+          export OCI_IMAGE_ID="$(cat image.txt)"
+          export OCI_BOOT_VOLUME_GB="$(cat bvsize.txt)"
+          export OCI_DISPLAY_NAME="$(cat displayname.txt)"
           ./hunter.sh
 
       - name: Upload result
