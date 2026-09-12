@@ -4,7 +4,13 @@
 # Oracle Cloud A1 Flex Hunter
 # Minecraft Server
 #
-# Flujo:
+# LISTADO:
+#   Usa OCI Python SDK para comprobar si existe Minecraft-Server.
+#
+# CREACION:
+#   Usa OCI CLI + --from-json para lanzar la instancia.
+#
+# FLUJO:
 #   1. Buscar Minecraft-Server
 #   2. Si existe -> terminar
 #   3. Si no existe -> intentar crear
@@ -55,6 +61,11 @@ if ! command -v oci >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! python -c "import oci" >/dev/null 2>&1; then
+    log "ERROR: Python OCI SDK no esta disponible."
+    exit 1
+fi
+
 if [ -z "$TENANCY_ID" ]; then
     log "ERROR: OCI_TENANCY_OCID no esta definido."
     exit 1
@@ -69,6 +80,62 @@ if [ ! -f "$LAUNCH_FILE" ]; then
     log "ERROR: falta $LAUNCH_FILE"
     exit 1
 fi
+
+# ============================================================
+# FUNCION: BUSCAR Minecraft-Server
+#
+# Usa OCI Python SDK.
+# No depende del stdout de "oci compute instance list".
+#
+# Salida:
+#   0 -> no existe
+#   1 -> existe
+#   2 -> error
+# ============================================================
+
+check_existing_instance() {
+
+    python - "$DISPLAY_NAME" <<'PY'
+import os
+import sys
+import oci
+
+display_name = sys.argv[1]
+
+try:
+    config = oci.config.from_file(
+        os.path.expanduser("~/.oci/config"),
+        "DEFAULT"
+    )
+
+    compute = oci.core.ComputeClient(config)
+
+    response = compute.list_instances(
+        compartment_id=config["tenancy"],
+        display_name=display_name
+    )
+
+    instances = response.data
+
+    print("INSTANCES_COUNT=" + str(len(instances)))
+
+    if not instances:
+        sys.exit(0)
+
+    for instance in instances:
+        print("INSTANCE_NAME=" + str(instance.display_name))
+        print("INSTANCE_ID=" + str(instance.id))
+        print("INSTANCE_STATE=" + str(instance.lifecycle_state))
+        print("INSTANCE_SHAPE=" + str(instance.shape))
+
+    sys.exit(1)
+
+except Exception as e:
+    print("SDK_ERROR=" + repr(e))
+    sys.exit(2)
+PY
+
+}
 
 # ============================================================
 # BUCLE PRINCIPAL
@@ -86,79 +153,29 @@ while true; do
     log "--------------------------------------------"
 
     # ========================================================
-    # BUSCAR SOLO Minecraft-Server
+    # BUSCAR INSTANCIA EXISTENTE
     # ========================================================
 
     log "Comprobando si ya existe ${DISPLAY_NAME}..."
+    log ""
 
-    EXISTING_FILE="$(mktemp)"
+    CHECK_OUTPUT="$(check_existing_instance 2>&1)"
+    CHECK_RC=$?
 
-    if ! oci compute instance list \
-        --compartment-id "$TENANCY_ID" \
-        --display-name "$DISPLAY_NAME" \
-        --all \
-        --output json > "$EXISTING_FILE" 2>instance-list-error.txt
-    then
+    log "$CHECK_OUTPUT"
 
-        RC=$?
+    # ========================================================
+    # ERROR CONSULTANDO OCI
+    # ========================================================
 
-        log ""
-        log "ERROR consultando instancias."
-        log ""
-
-        if [ -f instance-list-error.txt ]; then
-            cat instance-list-error.txt | tee -a "$LOG_FILE"
-        fi
-
-        rm -f "$EXISTING_FILE"
+    if [ "$CHECK_RC" -eq 2 ]; then
 
         log ""
-        log "Esperando ${INTERVAL_SECONDS}s antes de volver a consultar..."
+        log "ERROR consultando instancias mediante OCI SDK."
+        log "Esperando ${INTERVAL_SECONDS}s antes de volver a intentar."
+        log ""
+
         sleep "$INTERVAL_SECONDS"
-
-        continue
-    fi
-
-    # ========================================================
-    # CONTAR INSTANCIAS
-    # ========================================================
-
-    COUNT="$(
-        python - "$EXISTING_FILE" <<'PY'
-import json
-import sys
-
-filename = sys.argv[1]
-
-try:
-    with open(filename, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    instances = data.get("data", [])
-
-    print(len(instances))
-
-except Exception:
-    print("-1")
-PY
-    )"
-
-    # ========================================================
-    # JSON INVALIDO
-    # ========================================================
-
-    if [ "$COUNT" = "-1" ]; then
-        log ""
-        log "ERROR: OCI devolvio una respuesta que no es JSON valido."
-        log "Respuesta:"
-        cat "$EXISTING_FILE" | tee -a "$LOG_FILE"
-
-        rm -f "$EXISTING_FILE"
-
-        log ""
-        log "Esperando ${INTERVAL_SECONDS}s..."
-        sleep "$INTERVAL_SECONDS"
-
         continue
     fi
 
@@ -166,33 +183,14 @@ PY
     # YA EXISTE
     # ========================================================
 
-    if [ "$COUNT" -gt 0 ]; then
+    if [ "$CHECK_RC" -eq 1 ]; then
 
         log ""
         log "============================================"
         log " Minecraft-Server YA EXISTE"
         log "============================================"
         log ""
-
-        python - "$EXISTING_FILE" <<'PY' | tee -a "$LOG_FILE"
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-for instance in data.get("data", []):
-    print("Nombre :", instance.get("display-name"))
-    print("OCID   :", instance.get("id"))
-    print("Estado :", instance.get("lifecycle-state"))
-    print("Shape  :", instance.get("shape"))
-    print()
-PY
-
-        rm -f "$EXISTING_FILE"
-
-        log "La instancia ya existe."
-        log "El Hunter no creara otra."
+        log "El Hunter no creara otra instancia."
         log ""
 
         exit 0
@@ -202,8 +200,7 @@ PY
     # NO EXISTE
     # ========================================================
 
-    rm -f "$EXISTING_FILE"
-
+    log ""
     log "No existe ${DISPLAY_NAME}."
     log "Esto es correcto."
     log ""
@@ -213,6 +210,7 @@ PY
     # ========================================================
 
     log "Intentando crear VM.Standard.A1.Flex..."
+    log ""
 
     OUTPUT_FILE="$(mktemp)"
 
@@ -244,13 +242,10 @@ PY
         exit 0
     fi
 
-    RC=$?
-
     # ========================================================
-    # ERROR
+    # ERROR DE CREACION
     # ========================================================
 
-    log ""
     log "Oracle devolvio un error:"
     log ""
 
@@ -317,7 +312,7 @@ PY
     fi
 
     # ========================================================
-    # ERROR DE CONFIGURACION / REQUEST
+    # ERROR DE CONFIGURACION
     # ========================================================
 
     if grep -qiE \
@@ -330,7 +325,7 @@ PY
         log "============================================"
         log ""
         log "Oracle rechazo el request."
-        log "No tiene sentido seguir intentando el mismo request."
+        log "No se seguira intentando el mismo request."
         log ""
 
         rm -f "$OUTPUT_FILE"
