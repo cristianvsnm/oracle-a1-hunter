@@ -1,165 +1,81 @@
-name: Oracle A1 Hunter
+name: Oracle A1 Flex Hunter
 
 on:
+  schedule:
+    # Cada 15 minutos (mínimo razonable en GH Actions)
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
-jobs:
-  hunter:
-    runs-on: ubuntu-latest
+# Permite que solo uno corra a la vez
+concurrency:
+  group: oracle-hunter
+  cancel-in-progress: false
 
-    env:
-      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
-      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
-      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
-      OCI_REGION: sa-santiago-1
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    # 5h 50m (el máximo de GH Actions es 6h)
+    timeout-minutes: 350
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Instalar OCI SDK de Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OCI CLI
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install oci
+          pip install --quiet oci-cli
+          oci --version
 
-      - name: Comprobar autenticacion OCI
+      - name: Configure OCI credentials
+        env:
+          OCI_FINGERPRINT:   ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY:   ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_TENANCY_OCID:  ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID:     ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION:        ${{ secrets.OCI_REGION }}
         run: |
-          python3 <<'PY'
-          import os
-          import oci
+          mkdir -p "$HOME/.oci"
+          printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
 
-          tenancy = os.environ["OCI_TENANCY_OCID"]
-          user = os.environ["OCI_USER_OCID"]
-          fingerprint = os.environ["OCI_FINGERPRINT"]
-          private_key = os.environ["OCI_PRIVATE_KEY"]
-          region = os.environ["OCI_REGION"]
+          cat > "$HOME/.oci/config" <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 "$HOME/.oci/config"
 
-          signer = oci.signer.Signer(
-              tenancy=tenancy,
-              user=user,
-              fingerprint=fingerprint,
-              private_key_file_location=None,
-              private_key_content=private_key
-          )
-
-          identity = oci.identity.IdentityClient(
-              {"region": region},
-              signer=signer
-          )
-
-          regions = identity.list_regions().data
-
-          print("Autenticacion OCI correcta.")
-          print("Region solicitada:", region)
-
-          encontrada = any(r.name == region for r in regions)
-
-          if not encontrada:
-              raise RuntimeError(
-                  f"La region {region} no fue encontrada en la cuenta."
-              )
-
-          print("Region autenticada correctamente.")
-          PY
-
-      - name: Buscar Minecraft-Server
-        id: check
+      - name: Write launch.json
+        env:
+          LAUNCH_JSON: ${{ secrets.LAUNCH_JSON }}
         run: |
-          python3 <<'PY'
-          import os
-          import json
-          import oci
+          printf '%s' "$LAUNCH_JSON" > launch.json
+          # Validación rápida
+          python -c "import json,sys; json.load(open('launch.json'))" \
+            && echo "launch.json OK" \
+            || { echo "launch.json inválido"; exit 1; }
 
-          tenancy = os.environ["OCI_TENANCY_OCID"]
-          user = os.environ["OCI_USER_OCID"]
-          fingerprint = os.environ["OCI_FINGERPRINT"]
-          private_key = os.environ["OCI_PRIVATE_KEY"]
-          region = os.environ["OCI_REGION"]
-
-          signer = oci.signer.Signer(
-              tenancy=tenancy,
-              user=user,
-              fingerprint=fingerprint,
-              private_key_file_location=None,
-              private_key_content=private_key
-          )
-
-          compute = oci.core.ComputeClient(
-              {"region": region},
-              signer=signer
-          )
-
-          response = compute.list_instances(
-              compartment_id=tenancy,
-              display_name="Minecraft-Server"
-          )
-
-          instances = response.data
-
-          print("==========================================")
-          print("RESULTADO DE BUSQUEDA")
-          print("==========================================")
-          print("")
-          print("Instancias encontradas:", len(instances))
-          print("")
-
-          if len(instances) == 0:
-              print("NO EXISTE Minecraft-Server.")
-              print("Esto es lo esperado.")
-              print("")
-          else:
-              print("Minecraft-Server EXISTE.")
-              print("No se debe crear otra instancia.")
-              print("")
-
-              for instance in instances:
-                  print("Nombre :", instance.display_name)
-                  print("OCID   :", instance.id)
-                  print("Estado :", instance.lifecycle_state)
-                  print("Shape  :", instance.shape)
-                  print("")
-
-          print("==========================================")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"instance_count={len(instances)}\n")
-
-              if len(instances) == 0:
-                  f.write("instance_exists=false\n")
-              else:
-                  f.write("instance_exists=true\n")
-          PY
-
-      - name: Comprobar deteccion
+      - name: Run hunter
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
         run: |
-          echo "=========================================="
-          echo "COMPROBACION FINAL"
-          echo "=========================================="
-          echo ""
-          echo "Cantidad de instancias: ${{ steps.check.outputs.instance_count }}"
-          echo "Existe Minecraft-Server: ${{ steps.check.outputs.instance_exists }}"
-          echo ""
+          chmod +x ./hunter.sh
+          ./hunter.sh
 
-          if [ "${{ steps.check.outputs.instance_exists }}" = "false" ]; then
-            echo "CORRECTO:"
-            echo "No existe Minecraft-Server."
-            echo "El siguiente paso del Hunter sera intentar crear la A1."
-          else
-            echo "CORRECTO:"
-            echo "Minecraft-Server ya existe."
-            echo "El Hunter no debe crear otra."
-          fi
-
-          echo ""
-          echo "=========================================="
-
-      - name: Prueba terminada
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "PRUEBA TERMINADA"
-          echo "=========================================="
-          echo ""
-          echo "Todavia NO se intentara crear la A1."
-          echo "Primero confirmamos que la deteccion funciona correctamente."
-          echo ""
-          echo "=========================================="
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultado-${{ github.run_id }}
+          path: |
+            resultado.json
+            hunter.log
+          if-no-files-found: ignore
