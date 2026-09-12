@@ -52,29 +52,33 @@ jobs:
 
           set +e
 
-          OUTPUT=$(oci compute instance list \
+          oci compute instance list \
             --compartment-id "$TENANCY" \
-            --output json 2>&1)
+            --output json > instances.json 2>error.txt
 
           STATUS=$?
 
           if [ "$STATUS" -ne 0 ]; then
-            echo "$OUTPUT"
-            echo "No se pudo consultar Oracle."
+            echo "OCI devolvio un error:"
+            cat error.txt
             exit 1
           fi
 
-          echo "$OUTPUT"
+          echo "Respuesta recibida correctamente."
 
-          COUNT=$(echo "$OUTPUT" | python3 -c '
-          import sys
+          cat instances.json
+
+          COUNT=$(python3 -c '
           import json
 
-          data = json.load(sys.stdin)
+          with open("instances.json", "r") as f:
+              data = json.load(f)
+
           print(len(data.get("data", [])))
           ')
 
           echo "Instancias encontradas: $COUNT"
+
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Intentar crear A1
