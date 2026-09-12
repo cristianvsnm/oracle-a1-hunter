@@ -9,103 +9,60 @@ jobs:
   hunt:
     runs-on: ubuntu-latest
 
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: sa-santiago-1
+
     steps:
-      - name: Instalar OCI CLI
-        run: |
-          python3 -m pip install --upgrade oci-cli
 
-      - name: Configurar OCI
-        env:
-          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          USER: ${{ secrets.OCI_USER_OCID }}
-          FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.oci
-
-          printf '%s\n' "$PRIVATE_KEY" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
-
-          cat > ~/.oci/config <<EOF
-          [DEFAULT]
-          user=$USER
-          fingerprint=$FINGERPRINT
-          key_file=/home/runner/.oci/oci_api_key.pem
-          tenancy=$TENANCY
-          region=sa-santiago-1
-          EOF
-
-          chmod 600 ~/.oci/config
+      # ============================================================
+      # 1. Comprobar autenticacion
+      # ============================================================
 
       - name: Comprobar autenticacion OCI
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: auth
+        with:
+          command: 'iam region list'
+          query: 'data[0]."name"'
+
+      - name: Mostrar region autenticada
         run: |
-          echo "Comprobando autenticacion..."
+          echo "Autenticacion OCI correcta."
+          echo "Region: ${{ steps.auth.outputs.raw_output }}"
 
-          oci iam region list --output json > /dev/null
 
-          if [ "$?" -ne 0 ]; then
-            echo "Error de autenticacion con OCI."
-            exit 1
-          fi
+      # ============================================================
+      # 2. Buscar Minecraft-Server
+      # ============================================================
 
-          echo "Autenticacion correcta."
-
-      - name: Comprobar Minecraft-Server
+      - name: Buscar Minecraft-Server
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: check
-        env:
-          TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+        with:
+          command: 'compute instance list --compartment-id ${{ secrets.OCI_TENANCY_OCID }} --display-name Minecraft-Server --all'
+          query: 'length(data)'
+
+      - name: Mostrar resultado de busqueda
         run: |
-          echo "Comprobando si ya existe Minecraft-Server..."
-          echo ""
+          echo "Resultado de busqueda:"
+          echo "Instancias encontradas: ${{ steps.check.outputs.raw_output }}"
 
-          set +e
 
-          oci compute instance list \
-            --compartment-id "$TENANCY" \
-            --display-name "Minecraft-Server" \
-            --all \
-            --output table > instances.txt 2>error.txt
+      # ============================================================
+      # 3. Crear instancia si no existe
+      # ============================================================
 
-          STATUS=$?
-
-          if [ "$STATUS" -ne 0 ]; then
-            echo "OCI devolvio un error:"
-            cat error.txt
-            exit 1
-          fi
-
-          echo "Consulta de instancias completada."
-          echo ""
-
-          # Comprobar si OCI realmente devolvio alguna respuesta.
-          if [ ! -s instances.txt ]; then
-            echo "ERROR: OCI no devolvio ninguna informacion."
-            echo ""
-            echo "La consulta termino correctamente, pero la respuesta esta vacia."
-            echo "No vamos a asumir que no existe la instancia."
-            echo ""
-            echo "Error adicional:"
-            cat error.txt
-            exit 1
-          fi
-
-          # Buscar nuestra instancia por nombre.
-          if grep -Fq "Minecraft-Server" instances.txt; then
-            COUNT=1
-          else
-            COUNT=0
-          fi
-
-          echo "Minecraft-Server encontradas: $COUNT"
-
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-
-      - name: Intentar crear A1
-        if: steps.check.outputs.count == '0'
+      - name: Crear A1
+        if: steps.check.outputs.raw_output == '0'
         env:
           TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
           SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
+
           cat > launch.json <<EOF
           {
             "compartmentId": "$TENANCY",
@@ -127,7 +84,10 @@ jobs:
           }
           EOF
 
-          echo "Intentando crear A1 Flex 2 OCPU / 12 GB..."
+          echo "=========================================="
+          echo "Intentando crear Minecraft-Server"
+          echo "A1 Flex - 2 OCPU / 12 GB RAM"
+          echo "=========================================="
           echo ""
 
           set +e
@@ -140,10 +100,14 @@ jobs:
 
           echo "$OUTPUT"
 
+          # --------------------------------------------------------
+          # Creacion correcta
+          # --------------------------------------------------------
+
           if [ "$STATUS" -eq 0 ]; then
             echo ""
             echo "=========================================="
-            echo "  A1 CREADA CORRECTAMENTE"
+            echo "       A1 CREADA CORRECTAMENTE"
             echo "=========================================="
             echo ""
             echo "Oracle encontro capacidad."
@@ -151,10 +115,16 @@ jobs:
             exit 0
           fi
 
-          if echo "$OUTPUT" | grep -qiE "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
+          # --------------------------------------------------------
+          # Sin capacidad
+          # --------------------------------------------------------
+
+          if echo "$OUTPUT" | grep -qiE \
+            "Out of host capacity|Out of capacity|OutOfHostCapacity"; then
+
             echo ""
             echo "=========================================="
-            echo "  SIN CAPACIDAD A1"
+            echo "          SIN CAPACIDAD A1"
             echo "=========================================="
             echo ""
             echo "Oracle no tiene capacidad disponible."
@@ -162,19 +132,28 @@ jobs:
             exit 0
           fi
 
+          # --------------------------------------------------------
+          # Otro error
+          # --------------------------------------------------------
+
           echo ""
           echo "=========================================="
-          echo "  ERROR DIFERENTE DE CAPACIDAD"
+          echo "       ERROR DE ORACLE OCI"
           echo "=========================================="
           echo ""
-          echo "Oracle devolvio un error que debemos revisar."
+          echo "Oracle devolvio un error diferente."
           exit 1
 
-      - name: Ya existe Minecraft-Server
-        if: steps.check.outputs.count != '0'
+
+      # ============================================================
+      # 4. Ya existe
+      # ============================================================
+
+      - name: Minecraft-Server ya existe
+        if: steps.check.outputs.raw_output != '0'
         run: |
           echo "=========================================="
-          echo "  MINECRAFT-SERVER YA EXISTE"
+          echo "     MINECRAFT-SERVER YA EXISTE"
           echo "=========================================="
           echo ""
           echo "El Hunter no creara otra instancia."
