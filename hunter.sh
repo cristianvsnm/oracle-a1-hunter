@@ -4,9 +4,8 @@
 # ============================================================
 
 set -u
-# No usamos `set -e` a propósito: queremos capturar errores de OCI
 
-TENANCY_ID="${OCI_TENANCY_OCID}"
+TENANCY_ID="${OCI_TENANCY_OCID:-}"
 LAUNCH_JSON_FILE="./launch.json"
 INTERVAL_SECONDS=120
 LOG_FILE="./hunter.log"
@@ -28,14 +27,14 @@ log "Reintento:    cada ${INTERVAL_SECONDS}s"
 log ""
 
 # ------------------------------------------------------------
-# Comprobaciones
+# Comprobaciones iniciales
 # ------------------------------------------------------------
 if ! command -v oci >/dev/null 2>&1; then
   log "ERROR: OCI CLI no está disponible."
   exit 1
 fi
 
-if [ -z "${TENANCY_ID:-}" ]; then
+if [ -z "$TENANCY_ID" ]; then
   log "ERROR: OCI_TENANCY_OCID no está definido."
   exit 1
 fi
@@ -100,7 +99,7 @@ for i in d['data']:
   log "Intentando crear A1 Flex 2 OCPU / 12 GB..."
 
   OUTPUT=$(oci compute instance launch \
-      --from-json "file://$(pwd)/${LAUNCH_JSON_FILE#./}" \
+      --from-json "file://$(pwd)/launch.json" \
       --output json 2>&1)
   RC=$?
 
@@ -113,17 +112,7 @@ for i in d['data']:
 
     echo "$OUTPUT" > resultado.json
 
-    # Guardamos datos útiles en el resumen del workflow
-    IP=$(echo "$OUTPUT" | python -c "
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(d['data'].get('id',''))
-except: print('')
-" 2>/dev/null)
-
     log ""
-    log "OCID de la instancia: $IP"
     log "Respuesta guardada en resultado.json"
     exit 0
   fi
